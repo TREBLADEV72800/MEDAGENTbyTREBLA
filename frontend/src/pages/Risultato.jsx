@@ -20,32 +20,61 @@ import {
   Shield,
   RefreshCw
 } from 'lucide-react';
-import { mockResultData } from '../mock/mockData';
 import { useToast } from '../hooks/use-toast';
+import axios from 'axios';
+
+const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
+const API = `${BACKEND_URL}/api`;
 
 const Risultato = () => {
   const navigate = useNavigate();
   const { toast } = useToast();
-  const [conversationData, setConversationData] = useState(null);
   const [sessionData, setSessionData] = useState(null);
+  const [summaryData, setSummaryData] = useState(null);
+  const [conversationData, setConversationData] = useState([]);
   const [activeTab, setActiveTab] = useState('user');
+  const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
-    // Carica i dati della conversazione
-    const savedConversation = localStorage.getItem('medagent_conversation');
-    const savedSession = localStorage.getItem('medagent_session');
-    
-    if (savedConversation) {
-      setConversationData(JSON.parse(savedConversation));
-    }
-    
-    if (savedSession) {
-      setSessionData(JSON.parse(savedSession));
-    } else {
-      // Se non ci sono dati, reindirizza alla home
-      navigate('/');
-    }
+    loadSessionData();
   }, [navigate]);
+
+  const loadSessionData = async () => {
+    try {
+      // Recupera l'ID sessione
+      const sessionId = localStorage.getItem('medagent_session_id');
+      const sessionCompleted = localStorage.getItem('medagent_session_completed');
+      
+      if (!sessionId) {
+        navigate('/');
+        return;
+      }
+
+      // Carica il riassunto della sessione dal backend
+      const summaryResponse = await axios.get(`${API}/chat/summary/${sessionId}`);
+      setSummaryData(summaryResponse.data);
+
+      // Carica la conversazione
+      const historyResponse = await axios.get(`${API}/chat/history/${sessionId}`);
+      setConversationData(historyResponse.data);
+
+      // Carica i dati della sessione completata
+      if (sessionCompleted) {
+        setSessionData(JSON.parse(sessionCompleted));
+      }
+
+    } catch (error) {
+      console.error('Errore caricamento dati sessione:', error);
+      toast({
+        title: "Errore",
+        description: "Impossibile caricare i risultati della valutazione.",
+        variant: "destructive"
+      });
+      navigate('/');
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
   const getUrgencyColor = (level) => {
     switch (level) {
@@ -65,10 +94,70 @@ const Risultato = () => {
     }
   };
 
+  const getUrgencyMessage = (level) => {
+    switch (level) {
+      case 'high': return 'Situazione che richiede attenzione immediata';
+      case 'medium': return 'Situazione da monitorare - Consigliato controllo medico';
+      case 'low': return 'Situazione normale - Nessuna urgenza particolare';
+      default: return 'Valutazione completata';
+    }
+  };
+
+  const generateUserRecommendations = (urgencyLevel, symptoms) => {
+    const baseRecommendations = [
+      "Continua a monitorare i tuoi sintomi",
+      "Mantieni un'adeguata idratazione",
+      "Riposa quando necessario"
+    ];
+
+    if (urgencyLevel === 'high') {
+      return [
+        "Contatta immediatamente il tuo medico o il 118",
+        "Non ignorare i sintomi se peggiorano",
+        "Tieni monitorate le tue condizioni",
+        "Preparati a fornire dettagli sui tuoi sintomi"
+      ];
+    } else if (urgencyLevel === 'medium') {
+      return [
+        "Considera di contattare il tuo medico",
+        "Monitora l'evoluzione dei sintomi",
+        "Mantieni un diario dei sintomi",
+        "Evita automedicazione senza consulto medico"
+      ];
+    }
+
+    return baseRecommendations;
+  };
+
+  const generateTechnicalSummary = (summaryData, conversationData) => {
+    const userMessages = conversationData.filter(msg => msg.message_type === 'user');
+    const assistantMessages = conversationData.filter(msg => msg.message_type === 'assistant');
+    
+    return {
+      clinicalNotes: [
+        `Consultazione digitale completata in data ${new Date(summaryData.start_time).toLocaleDateString()}`,
+        `Durata della valutazione: ${Math.floor((new Date(summaryData.end_time) - new Date(summaryData.start_time)) / 60000)} minuti`,
+        `Numero di interazioni: ${userMessages.length} messaggi utente`,
+        `Sintomi riferiti: ${summaryData.symptoms_mentioned.join(', ') || 'Non specificati'}`,
+        `Livello di urgenza massimo rilevato: ${summaryData.max_urgency_level}`
+      ],
+      recommendations: [
+        "Valutazione basata su auto-segnalazione del paziente",
+        "Raccomandata supervisione medica per conferma diagnostica",
+        "Follow-up consigliato entro 48-72 ore se sintomi persistenti",
+        "Documentazione completa della conversazione disponibile"
+      ],
+      riskFactors: summaryData.user_profile?.condizioni_note?.length > 0 
+        ? summaryData.user_profile.condizioni_note 
+        : ["Nessun fattore di rischio specifico identificato"],
+      followUp: "Rivalutazione consigliata se persistenza o peggioramento sintomatologico"
+    };
+  };
+
   const handleDownloadReport = () => {
     toast({
       title: "Report scaricato",
-      description: "Il tuo report di valutazione è stato scaricato come PDF",
+      description: "Il tuo report di valutazione è stato preparato per il download",
     });
   };
 
@@ -90,17 +179,29 @@ const Risultato = () => {
 
   const handleNewEvaluation = () => {
     localStorage.removeItem('medagent_conversation');
-    localStorage.removeItem('medagent_session');
+    localStorage.removeItem('medagent_session_id');
+    localStorage.removeItem('medagent_session_completed');
     localStorage.removeItem('medagent_profile');
     navigate('/valutazione');
   };
 
-  if (!sessionData) {
+  if (isLoading) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-green-50 flex items-center justify-center">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
+          <p className="text-gray-600">Caricamento risultati...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!summaryData) {
     return (
       <div className="min-h-screen flex items-center justify-center">
         <div className="text-center">
-          <h2 className="text-2xl font-bold text-gray-900 mb-4">Caricamento risultati...</h2>
-          <p className="text-gray-600">Se il problema persiste, inizia una nuova valutazione.</p>
+          <h2 className="text-2xl font-bold text-gray-900 mb-4">Nessun risultato trovato</h2>
+          <p className="text-gray-600 mb-4">Non sono stati trovati risultati di valutazione.</p>
           <Link to="/valutazione">
             <Button className="mt-4">Nuova valutazione</Button>
           </Link>
@@ -108,6 +209,9 @@ const Risultato = () => {
       </div>
     );
   }
+
+  const technicalSummary = generateTechnicalSummary(summaryData, conversationData);
+  const userRecommendations = generateUserRecommendations(summaryData.max_urgency_level, summaryData.symptoms_mentioned);
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-green-50">
@@ -155,23 +259,23 @@ const Risultato = () => {
           <CardContent className="p-6">
             <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
               <div className="text-center">
-                <div className="text-2xl font-bold text-blue-600">{sessionData.sessionId.slice(-8)}</div>
+                <div className="text-2xl font-bold text-blue-600">{summaryData.session_id.slice(-8)}</div>
                 <div className="text-sm text-gray-600">ID Sessione</div>
               </div>
               <div className="text-center">
                 <div className="text-2xl font-bold text-green-600">
-                  {new Date(sessionData.startTime).toLocaleDateString()}
+                  {new Date(summaryData.start_time).toLocaleDateString()}
                 </div>
                 <div className="text-sm text-gray-600">Data valutazione</div>
               </div>
               <div className="text-center">
                 <div className="text-2xl font-bold text-purple-600">
-                  {Math.floor((new Date(sessionData.endTime) - new Date(sessionData.startTime)) / 60000)} min
+                  {Math.floor((new Date(summaryData.end_time) - new Date(summaryData.start_time)) / 60000)} min
                 </div>
                 <div className="text-sm text-gray-600">Durata</div>
               </div>
               <div className="text-center">
-                <div className="text-2xl font-bold text-orange-600">{sessionData.messageCount}</div>
+                <div className="text-2xl font-bold text-orange-600">{summaryData.message_count}</div>
                 <div className="text-sm text-gray-600">Messaggi scambiati</div>
               </div>
             </div>
@@ -213,7 +317,7 @@ const Risultato = () => {
               <CardHeader className="bg-gradient-to-r from-blue-600 to-green-600 text-white rounded-t-lg">
                 <CardTitle className="flex items-center text-2xl">
                   <Heart className="h-6 w-6 mr-3" />
-                  {mockResultData.userSummary.title}
+                  Riassunto della tua valutazione
                 </CardTitle>
               </CardHeader>
               <CardContent className="p-8">
@@ -225,20 +329,24 @@ const Risultato = () => {
                       Sintomi rilevati
                     </h3>
                     <div className="space-y-2">
-                      {mockResultData.userSummary.symptoms.map((symptom, index) => (
-                        <Badge key={index} variant="outline" className="mr-2 mb-2 p-2 text-sm">
-                          {symptom}
-                        </Badge>
-                      ))}
+                      {summaryData.symptoms_mentioned && summaryData.symptoms_mentioned.length > 0 ? (
+                        summaryData.symptoms_mentioned.map((symptom, index) => (
+                          <Badge key={index} variant="outline" className="mr-2 mb-2 p-2 text-sm">
+                            {symptom}
+                          </Badge>
+                        ))
+                      ) : (
+                        <p className="text-gray-600">Nessun sintomo specifico registrato</p>
+                      )}
                     </div>
                     <div className="grid grid-cols-2 gap-4 mt-4">
                       <div className="bg-blue-50 p-4 rounded-lg">
-                        <div className="text-sm text-gray-600">Durata</div>
-                        <div className="font-semibold">{mockResultData.userSummary.duration}</div>
+                        <div className="text-sm text-gray-600">Durata conversazione</div>
+                        <div className="font-semibold">{Math.floor((new Date(summaryData.end_time) - new Date(summaryData.start_time)) / 60000)} minuti</div>
                       </div>
                       <div className="bg-orange-50 p-4 rounded-lg">
-                        <div className="text-sm text-gray-600">Intensità</div>
-                        <div className="font-semibold">{mockResultData.userSummary.intensity}</div>
+                        <div className="text-sm text-gray-600">Urgenza rilevata</div>
+                        <div className="font-semibold capitalize">{summaryData.max_urgency_level}</div>
                       </div>
                     </div>
                   </div>
@@ -249,11 +357,11 @@ const Risultato = () => {
                       <Shield className="h-5 w-5 mr-2 text-green-600" />
                       Valutazione
                     </h3>
-                    <Alert className={`${getUrgencyColor(mockResultData.userSummary.urgencyLevel)} border-l-4`}>
+                    <Alert className={`${getUrgencyColor(summaryData.max_urgency_level)} border-l-4`}>
                       <div className="flex items-center">
-                        {getUrgencyIcon(mockResultData.userSummary.urgencyLevel)}
+                        {getUrgencyIcon(summaryData.max_urgency_level)}
                         <AlertDescription className="ml-2 font-medium">
-                          {mockResultData.userSummary.urgencyMessage}
+                          {getUrgencyMessage(summaryData.max_urgency_level)}
                         </AlertDescription>
                       </div>
                     </Alert>
@@ -269,7 +377,7 @@ const Risultato = () => {
                     Cosa puoi fare
                   </h3>
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    {mockResultData.userSummary.recommendations.map((recommendation, index) => (
+                    {userRecommendations.map((recommendation, index) => (
                       <div key={index} className="bg-green-50 border border-green-200 p-4 rounded-lg">
                         <div className="flex items-start">
                           <CheckCircle className="h-5 w-5 text-green-600 mr-3 mt-0.5 flex-shrink-0" />
@@ -289,29 +397,15 @@ const Risultato = () => {
               <CardHeader className="bg-gradient-to-r from-gray-700 to-gray-800 text-white rounded-t-lg">
                 <CardTitle className="flex items-center text-2xl">
                   <FileText className="h-6 w-6 mr-3" />
-                  {mockResultData.technicalSummary.title}
+                  Valutazione tecnica per operatori sanitari
                 </CardTitle>
               </CardHeader>
               <CardContent className="p-8">
-                {/* Codici ICD-10 */}
-                <div className="space-y-4 mb-8">
-                  <h3 className="text-xl font-semibold text-gray-900">Codici ICD-10</h3>
-                  <div className="flex flex-wrap gap-2">
-                    {mockResultData.technicalSummary.icd10Codes.map((code, index) => (
-                      <Badge key={index} variant="secondary" className="font-mono text-sm p-2">
-                        {code}
-                      </Badge>
-                    ))}
-                  </div>
-                </div>
-
-                <Separator className="my-8" />
-
                 {/* Note cliniche */}
                 <div className="space-y-4 mb-8">
                   <h3 className="text-xl font-semibold text-gray-900">Note cliniche</h3>
                   <div className="bg-gray-50 p-6 rounded-lg space-y-3">
-                    {mockResultData.technicalSummary.clinicalNotes.map((note, index) => (
+                    {technicalSummary.clinicalNotes.map((note, index) => (
                       <div key={index} className="flex items-start">
                         <div className="w-2 h-2 bg-gray-400 rounded-full mt-2 mr-3 flex-shrink-0"></div>
                         <p className="text-sm text-gray-700">{note}</p>
@@ -320,12 +414,12 @@ const Risultato = () => {
                   </div>
                 </div>
 
-                {/* Fattori di rischio */}
+                {/* Fattori di rischio e Follow-up */}
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
                   <div className="space-y-4">
                     <h3 className="text-xl font-semibold text-gray-900">Fattori di rischio</h3>
                     <div className="space-y-2">
-                      {mockResultData.technicalSummary.riskFactors.map((factor, index) => (
+                      {technicalSummary.riskFactors.map((factor, index) => (
                         <div key={index} className="bg-blue-50 border border-blue-200 p-3 rounded">
                           <p className="text-sm text-blue-800">{factor}</p>
                         </div>
@@ -337,7 +431,7 @@ const Risultato = () => {
                     <h3 className="text-xl font-semibold text-gray-900">Follow-up</h3>
                     <div className="bg-purple-50 border border-purple-200 p-4 rounded-lg">
                       <p className="text-sm text-purple-800 font-medium">
-                        {mockResultData.technicalSummary.followUp}
+                        {technicalSummary.followUp}
                       </p>
                     </div>
                   </div>
@@ -349,7 +443,7 @@ const Risultato = () => {
                 <div className="space-y-4">
                   <h3 className="text-xl font-semibold text-gray-900">Raccomandazioni cliniche</h3>
                   <div className="space-y-3">
-                    {mockResultData.technicalSummary.recommendations.map((recommendation, index) => (
+                    {technicalSummary.recommendations.map((recommendation, index) => (
                       <div key={index} className="bg-green-50 border-l-4 border-green-400 p-4">
                         <p className="text-sm text-green-800">{recommendation}</p>
                       </div>
