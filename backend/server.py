@@ -10,6 +10,8 @@ from typing import List
 import uuid
 from datetime import datetime
 
+# Import delle route
+from routes.chat_routes import router as chat_router
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -20,13 +22,12 @@ client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
 
 # Create the main app without a prefix
-app = FastAPI()
+app = FastAPI(title="MedAgent API", description="AI-powered Health Assistant API", version="1.0.0")
 
 # Create a router with the /api prefix
 api_router = APIRouter(prefix="/api")
 
-
-# Define Models
+# Define Models (keeping existing for compatibility)
 class StatusCheck(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     client_name: str
@@ -35,10 +36,10 @@ class StatusCheck(BaseModel):
 class StatusCheckCreate(BaseModel):
     client_name: str
 
-# Add your routes to the router instead of directly to app
+# Legacy routes
 @api_router.get("/")
 async def root():
-    return {"message": "Hello World"}
+    return {"message": "MedAgent API - AI-powered Health Assistant", "version": "1.0.0", "status": "active"}
 
 @api_router.post("/status", response_model=StatusCheck)
 async def create_status_check(input: StatusCheckCreate):
@@ -51,6 +52,33 @@ async def create_status_check(input: StatusCheckCreate):
 async def get_status_checks():
     status_checks = await db.status_checks.find().to_list(1000)
     return [StatusCheck(**status_check) for status_check in status_checks]
+
+# Health check per la nuova API
+@api_router.get("/health")
+async def health_check():
+    """Health check endpoint per verificare lo stato dell'API"""
+    try:
+        # Test connessione database
+        await db.command("ping")
+        
+        # Test variabili ambiente
+        gemini_key = os.environ.get('GEMINI_API_KEY')
+        
+        return {
+            "status": "healthy",
+            "database": "connected",
+            "ai_service": "configured" if gemini_key else "not_configured",
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    except Exception as e:
+        return {
+            "status": "unhealthy",
+            "error": str(e),
+            "timestamp": datetime.utcnow().isoformat()
+        }
+
+# Include chat routes
+api_router.include_router(chat_router)
 
 # Include the router in the main app
 app.include_router(api_router)
@@ -70,6 +98,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Log startup info
+logger.info("MedAgent API starting...")
+logger.info(f"Database: {os.environ.get('DB_NAME', 'Not configured')}")
+logger.info(f"Gemini API: {'Configured' if os.environ.get('GEMINI_API_KEY') else 'Not configured'}")
+
 @app.on_event("shutdown")
 async def shutdown_db_client():
     client.close()
+    logger.info("MedAgent API shutdown complete")
