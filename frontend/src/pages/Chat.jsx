@@ -7,8 +7,11 @@ import { Badge } from '../components/ui/badge';
 import { Separator } from '../components/ui/separator';
 import { ArrowLeft, Send, User, Bot, Stethoscope, AlertCircle, CheckCircle, Clock, Download } from 'lucide-react';
 import { Alert, AlertDescription } from '../components/ui/alert';
-import { generateMockResponse, mockSessionData } from '../mock/mockData';
 import { useToast } from '../hooks/use-toast';
+import axios from 'axios';
+
+const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
+const API = `${BACKEND_URL}/api`;
 
 const Chat = () => {
   const navigate = useNavigate();
@@ -17,38 +20,82 @@ const Chat = () => {
   const [inputMessage, setInputMessage] = useState('');
   const [isTyping, setIsTyping] = useState(false);
   const [userProfile, setUserProfile] = useState(null);
-  const [sessionId] = useState(mockSessionData.sessionId);
+  const [sessionId, setSessionId] = useState(null);
+  const [isLoading, setIsLoading] = useState(true);
   const messagesEndRef = useRef(null);
 
   useEffect(() => {
-    // Carica il profilo utente dal localStorage
-    const savedProfile = localStorage.getItem('medagent_profile');
-    if (savedProfile) {
-      setUserProfile(JSON.parse(savedProfile));
-    }
-
-    // Messaggio di benvenuto
-    const welcomeMessage = {
-      id: Date.now(),
-      type: 'assistant',
-      message: 'Ciao! Sono il tuo assistente sanitario MedAgent. Ho già le informazioni che hai fornito e sono qui per aiutarti a capire meglio come stai. Iniziamo parlando del tuo sintomo principale. Come ti senti in questo momento?',
-      timestamp: new Date().toISOString(),
-      urgencyLevel: 'low'
-    };
-    
-    setMessages([welcomeMessage]);
+    initializeChat();
   }, []);
 
   useEffect(() => {
     scrollToBottom();
   }, [messages]);
 
+  const initializeChat = async () => {
+    try {
+      // Carica il profilo utente dal localStorage
+      const savedProfile = localStorage.getItem('medagent_profile');
+      if (savedProfile) {
+        const profile = JSON.parse(savedProfile);
+        setUserProfile(profile);
+        
+        // Crea una nuova sessione
+        const sessionResponse = await axios.post(`${API}/chat/session`, {
+          user_profile_id: null
+        });
+        
+        const newSessionId = sessionResponse.data.session_id;
+        setSessionId(newSessionId);
+        
+        // Salva il profilo utente nel backend
+        if (profile) {
+          await axios.post(`${API}/chat/profile/${newSessionId}`, {
+            eta: profile.eta,
+            genere: profile.genere,
+            sintomo_principale: profile.sintomoPrincipale,
+            durata: profile.durata,
+            intensita: profile.intensita,
+            sintomi_associati: profile.sintomiAssociati,
+            condizioni_note: profile.condizioniNote,
+            familiarita: profile.familiarita
+          });
+        }
+        
+        // Ottieni il messaggio di benvenuto
+        const welcomeResponse = await axios.post(`${API}/chat/welcome/${newSessionId}`);
+        const welcomeMessage = {
+          id: welcomeResponse.data.id,
+          type: 'assistant',
+          message: welcomeResponse.data.content,
+          timestamp: welcomeResponse.data.timestamp,
+          urgencyLevel: welcomeResponse.data.urgency_level,
+          nextQuestions: welcomeResponse.data.next_questions
+        };
+        
+        setMessages([welcomeMessage]);
+      } else {
+        // Se non c'è profilo, reindirizza alla valutazione
+        navigate('/valutazione');
+      }
+    } catch (error) {
+      console.error('Errore inizializzazione chat:', error);
+      toast({
+        title: "Errore",
+        description: "Impossibile inizializzare la chat. Riprova.",
+        variant: "destructive"
+      });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   };
 
   const handleSendMessage = async () => {
-    if (!inputMessage.trim()) return;
+    if (!inputMessage.trim() || !sessionId) return;
 
     const userMessage = {
       id: Date.now(),
@@ -58,24 +105,39 @@ const Chat = () => {
     };
 
     setMessages(prev => [...prev, userMessage]);
+    const currentMessage = inputMessage;
     setInputMessage('');
     setIsTyping(true);
 
-    // Simula il typing delay
-    setTimeout(() => {
-      const mockResponse = generateMockResponse(inputMessage, messages);
+    try {
+      const response = await axios.post(`${API}/chat/message`, {
+        session_id: sessionId,
+        message: currentMessage
+      });
+
       const assistantMessage = {
-        id: Date.now() + 1,
+        id: response.data.assistant_message.id,
         type: 'assistant',
-        message: mockResponse.message,
-        urgencyLevel: mockResponse.urgencyLevel,
-        nextQuestions: mockResponse.nextQuestions,
-        timestamp: new Date().toISOString()
+        message: response.data.assistant_message.content,
+        urgencyLevel: response.data.assistant_message.urgency_level,
+        nextQuestions: response.data.assistant_message.next_questions,
+        timestamp: response.data.assistant_message.timestamp
       };
 
       setMessages(prev => [...prev, assistantMessage]);
+    } catch (error) {
+      console.error('Errore invio messaggio:', error);
+      toast({
+        title: "Errore",
+        description: "Impossibile inviare il messaggio. Riprova.",
+        variant: "destructive"
+      });
+      
+      // Rimuovi il messaggio utente in caso di errore
+      setMessages(prev => prev.filter(msg => msg.id !== userMessage.id));
+    } finally {
       setIsTyping(false);
-    }, 1500);
+    }
   };
 
   const handleKeyPress = (e) => {
@@ -89,16 +151,30 @@ const Chat = () => {
     setInputMessage(question);
   };
 
-  const handleFinishEvaluation = () => {
-    // Salva la conversazione per la pagina risultati
-    localStorage.setItem('medagent_conversation', JSON.stringify(messages));
-    localStorage.setItem('medagent_session', JSON.stringify({
-      sessionId,
-      startTime: mockSessionData.startTime,
-      endTime: new Date().toISOString(),
-      messageCount: messages.length
-    }));
-    navigate('/risultato');
+  const handleFinishEvaluation = async () => {
+    if (!sessionId) return;
+    
+    try {
+      // Chiudi la sessione
+      await axios.post(`${API}/chat/close/${sessionId}`);
+      
+      // Salva i dati per la pagina risultati
+      localStorage.setItem('medagent_session_id', sessionId);
+      localStorage.setItem('medagent_session_completed', JSON.stringify({
+        sessionId,
+        completedAt: new Date().toISOString(),
+        messageCount: messages.length
+      }));
+      
+      navigate('/risultato');
+    } catch (error) {
+      console.error('Errore chiusura sessione:', error);
+      toast({
+        title: "Errore",
+        description: "Errore nel terminare la valutazione. Riprova.",
+        variant: "destructive"
+      });
+    }
   };
 
   const getUrgencyColor = (level) => {
@@ -119,6 +195,17 @@ const Chat = () => {
     }
   };
 
+  if (isLoading) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-green-50 flex items-center justify-center">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
+          <p className="text-gray-600">Inizializzazione chat...</p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-green-50 flex flex-col">
       {/* Navigation */}
@@ -132,9 +219,11 @@ const Chat = () => {
               </span>
             </Link>
             <div className="flex items-center space-x-4">
-              <Badge variant="outline" className="bg-blue-50">
-                Sessione: {sessionId.slice(-8)}
-              </Badge>
+              {sessionId && (
+                <Badge variant="outline" className="bg-blue-50">
+                  Sessione: {sessionId.slice(-8)}
+                </Badge>
+              )}
               <Link to="/valutazione">
                 <Button variant="ghost" className="flex items-center">
                   <ArrowLeft className="h-4 w-4 mr-2" />
@@ -255,7 +344,7 @@ const Chat = () => {
                         )}
 
                         {/* Domande suggerite */}
-                        {message.type === 'assistant' && message.nextQuestions && (
+                        {message.type === 'assistant' && message.nextQuestions && message.nextQuestions.length > 0 && (
                           <div className="mt-4 space-y-2">
                             <p className="text-xs text-gray-500">Domande suggerite:</p>
                             {message.nextQuestions.map((question, index) => (
@@ -264,7 +353,7 @@ const Chat = () => {
                                 variant="outline"
                                 size="sm"
                                 onClick={() => handleQuickReply(question)}
-                                className="text-xs hover:bg-blue-50 hover:border-blue-300"
+                                className="text-xs hover:bg-blue-50 hover:border-blue-300 mr-2 mb-2"
                               >
                                 {question}
                               </Button>
