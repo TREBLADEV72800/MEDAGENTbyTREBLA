@@ -11,6 +11,9 @@ import uuid
 from datetime import datetime
 
 # Import delle route
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from routes.chat_routes import router as chat_router
 
 ROOT_DIR = Path(__file__).parent
