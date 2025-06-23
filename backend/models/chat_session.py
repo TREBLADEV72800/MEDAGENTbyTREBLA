@@ -5,7 +5,7 @@ import uuid
 
 class ChatSession(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    session_id: str
+    session_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     user_profile_id: Optional[str] = None
     start_time: datetime = Field(default_factory=datetime.utcnow)
     end_time: Optional[datetime] = None
