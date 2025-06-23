@@ -49,7 +49,9 @@ class MedAgentBackendTest:
         """Test the health check endpoint"""
         print("\n=== Testing Health Check API ===")
         try:
+            print(f"Making request to: {BACKEND_URL}/health")
             response = requests.get(f"{BACKEND_URL}/health")
+            print(f"Raw response: {response.text}")
             data = response.json()
             
             print(f"Status Code: {response.status_code}")
